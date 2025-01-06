@@ -637,7 +637,11 @@ function! s:quickfix_populate(data) abort
   " Format to parse command-line errors:
   set errorformat+=Error:\ %m
   " Format to parse reports:
-  set errorformat+=%f:%l\ %m
+  if b:is_hledger
+    set errorformat+=%m
+  else
+    set errorformat+=%f:%l\ %m
+  endif
   set errorformat+=%-G%.%#
   execute (g:ledger_use_location_list ? 'l' : 'c').'getexpr' 'a:data'
   let &errorformat = l:efm  " Restore global errorformat
@@ -739,12 +743,19 @@ endf
 " file  The file to be processed
 " args  A string of Ledger command-line arguments.
 function! ledger#register(file, args) abort
-  let l:cmd = s:ledger_cmd(a:file, join([
-        \ 'register',
-        \ "--format='" . g:ledger_qf_register_format . "'",
-        \ "--prepend-format='%(filename):%(beg_line) '",
-        \ a:args
-        \ ]))
+  if b:is_hledger
+    let l:cmd = s:ledger_cmd(a:file, join([
+          \ 'register',
+          \ a:args
+          \ ]))
+  else
+    let l:cmd = s:ledger_cmd(a:file, join([
+          \ 'register',
+          \ "--format='" . g:ledger_qf_register_format . "'",
+          \ "--prepend-format='%(filename):%(beg_line) '",
+          \ a:args
+          \ ]))
+  endif
   call s:quickfix_populate(split(system(l:cmd), '\n'))
   call s:quickfix_toggle('Register report')
 endf
@@ -800,15 +811,33 @@ function! ledger#show_balance(file, ...) abort
     call s:error_message('No account found')
     return
   endif
-  let l:cmd = s:ledger_cmd(a:file, join([
-        \ 'cleared',
-        \ shellescape(l:account),
-        \ '--empty',
-        \ '--collapse',
-        \ "--format='%(scrub(get_at(display_total, 0)))|%(scrub(get_at(display_total, 1)))|%(quantity(scrub(get_at(display_total, 1))))'",
-        \ (empty(g:ledger_default_commodity) ? '' : '-X ' . shellescape(g:ledger_default_commodity))
-        \ ]))
-  let l:output = split(system(l:cmd), '\n')
+  if b:is_hledger
+    let l:cmd = s:ledger_cmd(a:file, join([
+            \ 'balance',
+            \ shellescape(l:account) . '$'
+            \ ]))
+    let l:output = split(system(l:cmd), '\n')
+    let l:amounts = [str2float(substitute(l:output[-1], '[^0-9.]', '', 'g'))]
+    let l:cmd = s:ledger_cmd(a:file, join([
+            \ 'balance',
+            \ '--cleared',
+            \ shellescape(l:account) . '$'
+            \ ]))
+    let l:output = split(system(l:cmd), '\n')
+    call add(l:amounts, str2float(substitute(l:output[-1], '[^0-9.]', '', 'g')))
+    call add(l:amounts, l:amounts[0])
+  else
+    let l:cmd = s:ledger_cmd(a:file, join([
+          \ 'cleared',
+          \ shellescape(l:account),
+          \ '--empty',
+          \ '--collapse',
+          \ "--format='%(scrub(get_at(display_total, 0)))|%(scrub(get_at(display_total, 1)))|%(quantity(scrub(get_at(display_total, 1))))'",
+          \ (empty(g:ledger_default_commodity) ? '' : '-X ' . shellescape(g:ledger_default_commodity))
+          \ ]))
+    let l:output = split(system(l:cmd), '\n')
+    let l:amounts = split(l:output[-1], '|')
+  endif
   " Errors may occur, for example,  when the account has multiple commodities
   " and g:ledger_default_commodity is empty.
   if v:shell_error
@@ -816,7 +845,6 @@ function! ledger#show_balance(file, ...) abort
     call s:quickfix_toggle('Errors', 'Unable to parse errors')
     return
   endif
-  let l:amounts = split(l:output[-1], '|')
   redraw  " Necessary in some cases to overwrite previous messages. See :h echo-redraw
   if len(l:amounts) < 3
     call s:error_message('Could not determine balance. Did you use a valid account?')
